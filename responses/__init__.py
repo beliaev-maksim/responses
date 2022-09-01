@@ -2,8 +2,6 @@ import inspect
 import json as json_module
 import logging
 from collections import namedtuple
-from collections.abc import Sequence
-from collections.abc import Sized
 from functools import wraps
 from http import client
 from itertools import groupby
@@ -18,6 +16,8 @@ from typing import Iterator
 from typing import List
 from typing import Mapping
 from typing import Optional
+from typing import Sequence
+from typing import Sized
 from typing import Tuple
 from typing import Type
 from typing import Union
@@ -27,6 +27,7 @@ from warnings import warn
 from requests.adapters import HTTPAdapter
 from requests.adapters import MaxRetryError
 from requests.exceptions import ConnectionError
+from requests.exceptions import RetryError
 
 from responses.matchers import json_params_matcher as _json_params_matcher
 from responses.matchers import query_string_matcher as _query_string_matcher
@@ -63,7 +64,8 @@ from urllib.parse import urlunsplit
 
 if TYPE_CHECKING:  # pragma: no cover
     # import only for linter run
-    from mypy.typeshed.stdlib.unittest.mock import _patcher as _mock_patcher
+    from unittest.mock import _patch as _mock_patcher
+
     from requests import PreparedRequest
     from requests import models
     from urllib3 import Retry as _Retry
@@ -181,9 +183,6 @@ def get_wrapped(
         Wrapped function
 
     """
-    if registry is not None:
-        responses._set_registry(registry)
-
     assert_mock = std_mock.patch.object(
         target=responses,
         attribute="assert_all_requests_are_fired",
@@ -195,6 +194,9 @@ def get_wrapped(
         @wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:  # type: ignore[misc]
 
+            if registry is not None:
+                responses._set_registry(registry)
+
             with assert_mock, responses:
                 return await func(*args, **kwargs)
 
@@ -202,6 +204,9 @@ def get_wrapped(
 
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:  # type: ignore[misc]
+
+            if registry is not None:
+                responses._set_registry(registry)
 
             with assert_mock, responses:
                 # set 'assert_all_requests_are_fired' temporarily for a single run.
@@ -212,7 +217,7 @@ def get_wrapped(
     return wrapper
 
 
-class CallList(Sequence, Sized):  # type: ignore[type-arg]
+class CallList(Sequence[Any], Sized):
     def __init__(self) -> None:
         self._calls: List[Call] = []
 
@@ -222,7 +227,7 @@ class CallList(Sequence, Sized):  # type: ignore[type-arg]
     def __len__(self) -> int:
         return len(self._calls)
 
-    def __getitem__(self, idx: int) -> Call:  # type: ignore[override]
+    def __getitem__(self, idx: Union[int, slice]) -> Union[Call, List[Call]]:
         return self._calls[idx]
 
     def add(self, request: "PreparedRequest", response: _Body) -> None:
@@ -410,6 +415,25 @@ class BaseResponse(object):
         return bool(urlsplit(self.url).query)
 
     def _url_matches(self, url: _URLPatternType, other: str) -> bool:
+        """Compares two URLs.
+
+        Compares only scheme, netloc and path. If 'url' is a re.Pattern, then checks that
+        'other' matches the pattern.
+
+        Parameters
+        ----------
+        url : Union["Pattern[str]", str]
+            Reference URL or Pattern to compare.
+
+        other : str
+            URl that should be compared.
+
+        Returns
+        -------
+        bool
+            True, if URLs are identical or 'other' matches the pattern.
+
+        """
         if isinstance(url, str):
             if _has_unicode(url):
                 url = _clean_unicode(url)
@@ -652,7 +676,7 @@ class RequestsMock(object):
         self.response_callback: Optional[Callable[[Any], Response]] = response_callback
         self.passthru_prefixes: Tuple[_URLPatternType, ...] = tuple(passthru_prefixes)
         self.target: str = target
-        self._patcher: Optional["_mock_patcher"] = None
+        self._patcher: Optional["_mock_patcher[Any]"] = None
         self._thread_lock = _ThreadingLock()
 
     def get_registry(self) -> FirstMatchRegistry:
@@ -1027,9 +1051,18 @@ class RequestsMock(object):
                     response=response,  # type: ignore[misc]
                 )
                 return self._on_request(adapter, request, retries=retries, **kwargs)
-            except MaxRetryError:
+            except MaxRetryError as e:
                 if retries.raise_on_status:
-                    raise
+                    """Since we call 'retries.increment()' by ourselves, we always set "error"
+                    argument equal to None, thus, MaxRetryError exception will be raised with
+                    ResponseError as a 'reason'.
+
+                    Here we're emulating the `if isinstance(e.reason, ResponseError):`
+                    branch found at:
+                    https://github.com/psf/requests/blob/
+                    177dd90f18a8f4dc79a7d2049f0a3f4fcc5932a0/requests/adapters.py#L549"""
+                    raise RetryError(e, request=request)
+
                 return response
         return response
 

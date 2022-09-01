@@ -19,6 +19,8 @@ setup_requires = []
 install_requires = [
     "requests>=2.0,<3.0",
     "urllib3>=1.25.10",
+    "toml",
+    "types-toml",
     "typing_extensions; python_version < '3.8'",
 ]
 
@@ -27,9 +29,8 @@ tests_require = [
     "coverage >= 6.0.0",
     "pytest-cov",
     "pytest-asyncio",
-    "pytest-localserver",
+    "pytest-httpserver",
     "flake8",
-    "types-mock",
     "types-requests",
     "mypy",
 ]
@@ -62,6 +63,12 @@ setup(
     author="David Cramer",
     description="A utility library for mocking out the `requests` Python library.",
     url="https://github.com/getsentry/responses",
+    project_urls={
+        "Bug Tracker": "https://github.com/getsentry/responses/issues",
+        "Changes": "https://github.com/getsentry/responses/blob/master/CHANGES",
+        "Documentation": "https://github.com/getsentry/responses/blob/master/README.rst",
+        "Source Code": "https://github.com/getsentry/responses",
+    },
     license="Apache 2.0",
     long_description=open("README.rst").read(),
     long_description_content_type="text/x-rst",

@@ -13,10 +13,10 @@ from unittest.mock import patch
 
 import pytest
 import requests
-from requests.adapters import MaxRetryError
 from requests.exceptions import ChunkedEncodingError
 from requests.exceptions import ConnectionError
 from requests.exceptions import HTTPError
+from requests.exceptions import RetryError
 from urllib3.util.retry import Retry
 
 import responses
@@ -1065,10 +1065,10 @@ def test_response_filebody():
     def run():
         current_file = os.path.abspath(__file__)
         with responses.RequestsMock() as m:
-            with open(current_file, "r") as out:
+            with open(current_file, "r", encoding="utf-8") as out:
                 m.add(responses.GET, "http://example.com", body=out.read(), stream=True)
                 resp = requests.get("http://example.com", stream=True)
-            with open(current_file, "r") as out:
+            with open(current_file, "r", encoding="utf-8") as out:
                 assert resp.text == out.read()
 
     run()
@@ -1568,19 +1568,21 @@ def test_multiple_methods():
 
 
 def test_passthrough_flag(httpserver):
-    httpserver.serve_content("OK", headers={"Content-Type": "text/plain"})
-    response = Response(responses.GET, httpserver.url, body="MOCK")
+    httpserver.expect_request("/").respond_with_data("OK", content_type="text/plain")
+    url = httpserver.url_for("/")
+
+    response = Response(responses.GET, url, body="MOCK")
 
     @responses.activate
     def run_passthrough():
         responses.add(response)
-        resp = requests.get(httpserver.url)
+        resp = requests.get(url)
         assert_response(resp, "OK")
 
     @responses.activate
     def run_mocked():
         responses.add(response)
-        resp = requests.get(httpserver.url)
+        resp = requests.get(url)
         assert_response(resp, "MOCK")
 
     run_mocked()
@@ -1592,21 +1594,22 @@ def test_passthrough_flag(httpserver):
 
 
 def test_passthrough_kwarg(httpserver):
-    httpserver.serve_content("OK", headers={"Content-Type": "text/plain"})
+    httpserver.expect_request("/").respond_with_data("OK", content_type="text/plain")
+    url = httpserver.url_for("/")
 
     def configure_response(passthrough):
-        responses.get(httpserver.url, body="MOCK", passthrough=passthrough)
+        responses.get(url, body="MOCK", passthrough=passthrough)
 
     @responses.activate
     def run_passthrough():
         configure_response(passthrough=True)
-        resp = requests.get(httpserver.url)
+        resp = requests.get(url)
         assert_response(resp, "OK")
 
     @responses.activate
     def run_mocked():
         configure_response(passthrough=False)
-        resp = requests.get(httpserver.url)
+        resp = requests.get(url)
         assert_response(resp, "MOCK")
 
     run_mocked()
@@ -1617,36 +1620,38 @@ def test_passthrough_kwarg(httpserver):
 
 
 def test_passthrough_response(httpserver):
-    httpserver.serve_content("OK", headers={"Content-Type": "text/plain"})
+    httpserver.expect_request("/").respond_with_data("OK", content_type="text/plain")
+    url = httpserver.url_for("/")
 
     @responses.activate
     def run():
-        responses.add(PassthroughResponse(responses.GET, httpserver.url))
-        responses.add(responses.GET, "{}/one".format(httpserver.url), body="one")
+        responses.add(PassthroughResponse(responses.GET, url))
+        responses.add(responses.GET, "{}/one".format(url), body="one")
         responses.add(responses.GET, "http://example.com/two", body="two")
 
         resp = requests.get("http://example.com/two")
         assert_response(resp, "two")
-        resp = requests.get("{}/one".format(httpserver.url))
+        resp = requests.get("{}/one".format(url))
         assert_response(resp, "one")
-        resp = requests.get(httpserver.url)
+        resp = requests.get(url)
         assert_response(resp, "OK")
 
         assert len(responses.calls) == 3
-        responses.assert_call_count(httpserver.url, 1)
+        responses.assert_call_count(url, 1)
 
     run()
     assert_reset()
 
 
 def test_passthrough_response_stream(httpserver):
-    httpserver.serve_content("OK", headers={"Content-Type": "text/plain"})
+    httpserver.expect_request("/").respond_with_data("OK", content_type="text/plain")
 
     @responses.activate
     def run():
-        responses.add(PassthroughResponse(responses.GET, httpserver.url))
-        content_1 = requests.get(httpserver.url).content
-        with requests.get(httpserver.url, stream=True) as resp:
+        url = httpserver.url_for("/")
+        responses.add(PassthroughResponse(responses.GET, url))
+        content_1 = requests.get(url).content
+        with requests.get(url, stream=True) as resp:
             content_2 = resp.raw.read()
         assert content_1 == content_2
 
@@ -1655,19 +1660,20 @@ def test_passthrough_response_stream(httpserver):
 
 
 def test_passthru_prefixes(httpserver):
-    httpserver.serve_content("OK", headers={"Content-Type": "text/plain"})
+    httpserver.expect_request("/").respond_with_data("OK", content_type="text/plain")
+    url = httpserver.url_for("/")
 
     @responses.activate
     def run_constructor_argument():
-        with responses.RequestsMock(passthru_prefixes=(httpserver.url,)):
-            resp = requests.get(httpserver.url)
+        with responses.RequestsMock(passthru_prefixes=(url,)):
+            resp = requests.get(url)
             assert_response(resp, "OK")
 
     @responses.activate
     def run_property_setter():
         with responses.RequestsMock() as m:
-            m.passthru_prefixes = tuple([httpserver.url])
-            resp = requests.get(httpserver.url)
+            m.passthru_prefixes = tuple([url])
+            resp = requests.get(url)
             assert_response(resp, "OK")
 
     run_constructor_argument()
@@ -1677,19 +1683,20 @@ def test_passthru_prefixes(httpserver):
 
 
 def test_passthru(httpserver):
-    httpserver.serve_content("OK", headers={"Content-Type": "text/plain"})
+    httpserver.expect_request("/").respond_with_data("OK", content_type="text/plain")
+    url = httpserver.url_for("/")
 
     @responses.activate
     def run():
-        responses.add_passthru(httpserver.url)
-        responses.add(responses.GET, "{}/one".format(httpserver.url), body="one")
+        responses.add_passthru(url)
+        responses.add(responses.GET, "{}/one".format(url), body="one")
         responses.add(responses.GET, "http://example.com/two", body="two")
 
         resp = requests.get("http://example.com/two")
         assert_response(resp, "two")
-        resp = requests.get("{}/one".format(httpserver.url))
+        resp = requests.get("{}/one".format(url))
         assert_response(resp, "one")
-        resp = requests.get(httpserver.url)
+        resp = requests.get(url)
         assert_response(resp, "OK")
 
     run()
@@ -1697,21 +1704,24 @@ def test_passthru(httpserver):
 
 
 def test_passthru_regex(httpserver):
-    httpserver.serve_content("OK", headers={"Content-Type": "text/plain"})
+    httpserver.expect_request(re.compile("^/\\w+")).respond_with_data(
+        "OK", content_type="text/plain"
+    )
+    url = httpserver.url_for("/")
 
     @responses.activate
     def run():
-        responses.add_passthru(re.compile("{}/\\w+".format(httpserver.url)))
-        responses.add(responses.GET, "{}/one".format(httpserver.url), body="one")
+        responses.add_passthru(re.compile(f"{url}/\\w+"))
+        responses.add(responses.GET, "{}/one".format(url), body="one")
         responses.add(responses.GET, "http://example.com/two", body="two")
 
         resp = requests.get("http://example.com/two")
         assert_response(resp, "two")
-        resp = requests.get("{}/one".format(httpserver.url))
+        resp = requests.get(f"{url}/one")
         assert_response(resp, "one")
-        resp = requests.get("{}/two".format(httpserver.url))
+        resp = requests.get(f"{url}/two")
         assert_response(resp, "OK")
-        resp = requests.get("{}/three".format(httpserver.url))
+        resp = requests.get(f"{url}/three")
         assert_response(resp, "OK")
 
     run()
@@ -1724,7 +1734,7 @@ def test_passthru_does_not_persist_across_tests(httpserver):
     see:
     https://github.com/getsentry/responses/issues/322
     """
-    httpserver.serve_content("OK", headers={"Content-Type": "text/plain"})
+    httpserver.expect_request("/").respond_with_data("OK", content_type="text/plain")
 
     @responses.activate
     def with_a_passthru():
@@ -2183,9 +2193,12 @@ class TestMultipleWrappers:
             Mock real HTTP server
 
         """
-        httpserver.serve_content("OK", code=969, headers={"Content-Type": "text/plain"})
+        httpserver.expect_request("/").respond_with_data(
+            "OK", content_type="text/plain", status=969
+        )
+        url = httpserver.url_for("/")
 
-        response = requests.get(httpserver.url)
+        response = requests.get(url)
         assert response.status_code == 969
 
 
@@ -2375,6 +2388,21 @@ def test_redirect():
 
 
 class TestMaxRetry:
+    def set_session(self, total=4, raise_on_status=True):
+        session = requests.Session()
+
+        adapter = requests.adapters.HTTPAdapter(
+            max_retries=Retry(
+                total=total,
+                backoff_factor=0.1,
+                status_forcelist=[500],
+                method_whitelist=["GET", "POST", "PATCH"],
+                raise_on_status=raise_on_status,
+            )
+        )
+        session.mount("https://", adapter)
+        return session
+
     def test_max_retries(self):
         """This example is present in README.rst"""
 
@@ -2386,17 +2414,7 @@ class TestMaxRetry:
             rsp3 = responses.get(url, body="Error", status=500)
             rsp4 = responses.get(url, body="OK", status=200)
 
-            session = requests.Session()
-
-            adapter = requests.adapters.HTTPAdapter(
-                max_retries=Retry(
-                    total=4,
-                    backoff_factor=0.1,
-                    status_forcelist=[500],
-                    method_whitelist=["GET", "POST", "PATCH"],
-                )
-            )
-            session.mount("https://", adapter)
+            session = self.set_session()
 
             resp = session.get(url)
 
@@ -2418,21 +2436,10 @@ class TestMaxRetry:
             rsp2 = responses.get(url, body="Error", status=500)
             rsp3 = responses.get(url, body="Error", status=500)
 
-            session = requests.Session()
-
-            adapter = requests.adapters.HTTPAdapter(
-                max_retries=Retry(
-                    total=2,
-                    backoff_factor=0.1,
-                    status_forcelist=[500],
-                    method_whitelist=["GET", "POST", "PATCH"],
-                    raise_on_status=raise_on_status,
-                )
-            )
-            session.mount("https://", adapter)
+            session = self.set_session(total=2, raise_on_status=raise_on_status)
 
             if raise_on_status:
-                with pytest.raises(MaxRetryError):
+                with pytest.raises(RetryError):
                     session.get(url)
             else:
                 resp = session.get(url)
@@ -2461,18 +2468,7 @@ class TestMaxRetry:
             responses.add(error_rsp)
             responses.add(ok_rsp)
 
-            session = requests.Session()
-
-            adapter = requests.adapters.HTTPAdapter(
-                max_retries=Retry(
-                    total=4,
-                    backoff_factor=0.1,
-                    status_forcelist=[500],
-                    method_whitelist=["GET", "POST", "PATCH"],
-                )
-            )
-            session.mount("https://", adapter)
-
+            session = self.set_session()
             resp = session.get(url)
             assert resp.status_code == 200
 

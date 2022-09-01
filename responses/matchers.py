@@ -53,6 +53,19 @@ def _create_key_val_str(input_dict: Union[Dict[Any, Any], Any]) -> str:
     return key_val_str
 
 
+def _filter_dict_recursively(
+    dict1: Dict[Any, Any], dict2: Dict[Any, Any]
+) -> Dict[Any, Any]:
+    filtered_dict = {}
+    for k, val in dict1.items():
+        if k in dict2:
+            if isinstance(val, dict):
+                val = _filter_dict_recursively(val, dict2[k])
+            filtered_dict[k] = val
+
+    return filtered_dict
+
+
 def urlencoded_params_matcher(
     params: Optional[Dict[str, str]], *, allow_blank: bool = False
 ) -> Callable[..., Any]:
@@ -83,29 +96,61 @@ def urlencoded_params_matcher(
     return match
 
 
-def json_params_matcher(params: Optional[Dict[str, Any]]) -> Callable[..., Any]:
-    """
-    Matches JSON encoded data
+def json_params_matcher(
+    params: Optional[Union[Dict[str, Any], List[Any]]], *, strict_match: bool = True
+) -> Callable[..., Any]:
+    """Matches JSON encoded data of request body.
 
-    :param params: (dict) JSON data provided to 'json' arg of request
-    :return: (func) matcher
+    Parameters
+    ----------
+    params : dict or list
+        JSON object provided to 'json' arg of request or a part of it if used in
+        conjunction with ``strict_match=False``.
+    strict_match : bool, default=True
+        Applied only when JSON object is a dictionary.
+        If set to ``True``, validates that all keys of JSON object match.
+        If set to ``False``, original request may contain additional keys.
+
+
+    Returns
+    -------
+    Callable
+        Matcher function.
+
     """
 
     def match(request: PreparedRequest) -> Tuple[bool, str]:
         reason = ""
         request_body = request.body
-        params_dict = params or {}
+        json_params = (params or {}) if not isinstance(params, list) else params
         try:
             if isinstance(request_body, bytes):
                 request_body = request_body.decode("utf-8")
             json_body = json_module.loads(request_body) if request_body else {}
 
-            valid = params is None if request_body is None else params_dict == json_body
+            if (
+                not strict_match
+                and isinstance(json_body, dict)
+                and isinstance(json_params, dict)
+            ):
+                # filter down to just the params specified in the matcher
+                json_body = _filter_dict_recursively(json_body, json_params)
+
+            valid = params is None if request_body is None else json_params == json_body
 
             if not valid:
-                reason = "request.body doesn't match: {} doesn't match {}".format(
-                    _create_key_val_str(json_body), _create_key_val_str(params_dict)
-                )
+                if isinstance(json_body, dict) and isinstance(json_params, dict):
+                    reason = "request.body doesn't match: {} doesn't match {}".format(
+                        _create_key_val_str(json_body), _create_key_val_str(json_params)
+                    )
+                else:
+                    reason = f"request.body doesn't match: {json_body} doesn't match {json_params}"
+
+                if not strict_match:
+                    reason += (
+                        "\nNote: You use non-strict parameters check, "
+                        "to change it use `strict_match=True`."
+                    )
 
         except JSONDecodeError:
             valid = False
